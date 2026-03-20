@@ -161,7 +161,7 @@ Decision Engine
 Payout System
 
 ---
-
+![Architecture Diagram](architecture.png)
 ## 🧪 Simulation & Testing
 
 🔐 Admin Access:
