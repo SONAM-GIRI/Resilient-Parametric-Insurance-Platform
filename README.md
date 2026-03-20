@@ -1,4 +1,4 @@
-**🛡️ Our Solution: Multi-Layer Adversarial Defense System**
+__🛡️ Our Solution: Multi-Layer Adversarial Defense System__
 
 We introduce a 4-layer intelligent defense architecture combining sensor fusion, behavioral intelligence, graph analysis, and dynamic risk control.
 
