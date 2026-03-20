@@ -22,7 +22,8 @@ import {
   ChevronRight,
   ChevronLeft,
   Bell,
-  Search
+  Search,
+  Settings
 } from "lucide-react";
 import { 
   LineChart, 
@@ -121,6 +122,9 @@ const LoginPage = ({ onLogin }: { onLogin: (user: any) => void }) => {
               className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all outline-none"
               placeholder="••••••••"
             />
+            <div className="mt-2 text-right">
+              <Link to="/forgot-password" title="Forgot Password" className="text-xs text-indigo-600 hover:text-indigo-700 font-medium">Forgot Password?</Link>
+            </div>
           </div>
           <button className="w-full bg-indigo-600 text-white py-3 rounded-xl font-semibold hover:bg-indigo-700 transition-colors shadow-lg shadow-indigo-200">
             Sign In
@@ -151,9 +155,207 @@ const LoginPage = ({ onLogin }: { onLogin: (user: any) => void }) => {
   );
 };
 
+const ForgotPasswordPage = () => {
+  const [email, setEmail] = useState("");
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    setError("");
+    setMessage("");
+
+    try {
+      const res = await fetch("/api/auth/forgot-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setMessage(data.message);
+      } else {
+        setError(data.error);
+      }
+    } catch (err) {
+      setError("An error occurred. Please try again.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-slate-50">
+      <motion.div 
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="bg-white p-8 rounded-2xl shadow-xl w-full max-w-md border border-slate-100"
+      >
+        <div className="flex items-center gap-3 mb-8">
+          <div className="p-3 bg-indigo-600 rounded-xl">
+            <Shield className="w-6 h-6 text-white" />
+          </div>
+          <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Reset Password</h1>
+        </div>
+        
+        {message ? (
+          <div className="bg-emerald-50 border border-emerald-100 text-emerald-700 p-4 rounded-xl mb-6 text-sm">
+            {message}
+            <div className="mt-4">
+              <Link to="/login" className="text-emerald-800 font-bold hover:underline">Return to Login</Link>
+            </div>
+          </div>
+        ) : (
+          <form onSubmit={handleSubmit} className="space-y-6">
+            <p className="text-sm text-slate-500">Enter your email address and we'll send you a link to reset your password.</p>
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-2">Email</label>
+              <input 
+                type="email" 
+                required
+                value={email} 
+                onChange={(e) => setEmail(e.target.value)}
+                className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all outline-none"
+                placeholder="name@company.com"
+              />
+            </div>
+            {error && <p className="text-red-500 text-xs font-medium">{error}</p>}
+            <button 
+              disabled={loading}
+              className="w-full bg-indigo-600 text-white py-3 rounded-xl font-semibold hover:bg-indigo-700 transition-colors shadow-lg shadow-indigo-200 disabled:opacity-50"
+            >
+              {loading ? "Sending..." : "Send Reset Link"}
+            </button>
+            <div className="text-center">
+              <Link to="/login" className="text-sm text-indigo-600 hover:text-indigo-700 font-medium">Back to Login</Link>
+            </div>
+          </form>
+        )}
+      </motion.div>
+    </div>
+  );
+};
+
+const ResetPasswordPage = () => {
+  const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+  const navigate = useNavigate();
+  const [searchParams] = (useNavigate as any).name === 'useNavigate' ? [new URLSearchParams(window.location.search)] : [new URLSearchParams(window.location.search)]; // Hack for search params if not using useSearchParams hook directly
+  // Actually, let's just use useLocation or window.location
+  const token = new URLSearchParams(window.location.search).get("token");
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (password !== confirmPassword) {
+      setError("Passwords do not match");
+      return;
+    }
+    if (password.length < 8) {
+      setError("Password must be at least 8 characters");
+      return;
+    }
+
+    setLoading(true);
+    setError("");
+
+    try {
+      const res = await fetch("/api/auth/reset-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token, password })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setMessage(data.message);
+        setTimeout(() => navigate("/login"), 3000);
+      } else {
+        setError(data.error);
+      }
+    } catch (err) {
+      setError("An error occurred. Please try again.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (!token) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-50">
+        <div className="bg-white p-8 rounded-2xl shadow-xl w-full max-w-md border border-slate-100 text-center">
+          <AlertTriangle className="w-12 h-12 text-red-500 mx-auto mb-4" />
+          <h2 className="text-xl font-bold text-slate-900 mb-2">Invalid Reset Link</h2>
+          <p className="text-slate-500 mb-6">This password reset link is invalid or has expired.</p>
+          <Link to="/forgot-password" title="Request a new reset link" className="text-indigo-600 font-bold hover:underline">Request a new link</Link>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-slate-50">
+      <motion.div 
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="bg-white p-8 rounded-2xl shadow-xl w-full max-w-md border border-slate-100"
+      >
+        <div className="flex items-center gap-3 mb-8">
+          <div className="p-3 bg-indigo-600 rounded-xl">
+            <Shield className="w-6 h-6 text-white" />
+          </div>
+          <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Set New Password</h1>
+        </div>
+        
+        {message ? (
+          <div className="bg-emerald-50 border border-emerald-100 text-emerald-700 p-4 rounded-xl mb-6 text-sm">
+            {message}. Redirecting to login...
+          </div>
+        ) : (
+          <form onSubmit={handleSubmit} className="space-y-6">
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-2">New Password</label>
+              <input 
+                type="password" 
+                required
+                value={password} 
+                onChange={(e) => setPassword(e.target.value)}
+                className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all outline-none"
+                placeholder="••••••••"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-2">Confirm New Password</label>
+              <input 
+                type="password" 
+                required
+                value={confirmPassword} 
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all outline-none"
+                placeholder="••••••••"
+              />
+            </div>
+            {error && <p className="text-red-500 text-xs font-medium">{error}</p>}
+            <button 
+              disabled={loading}
+              className="w-full bg-indigo-600 text-white py-3 rounded-xl font-semibold hover:bg-indigo-700 transition-colors shadow-lg shadow-indigo-200 disabled:opacity-50"
+            >
+              {loading ? "Updating..." : "Update Password"}
+            </button>
+          </form>
+        )}
+      </motion.div>
+    </div>
+  );
+};
+
 const AdminDashboard = ({ user }: { user: any }) => {
   const [stats, setStats] = useState<any>(null);
   const [clusters, setClusters] = useState<any[]>([]);
+  const [riskThresholds, setRiskThresholds] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<any[] | null>(null);
@@ -172,9 +374,10 @@ const AdminDashboard = ({ user }: { user: any }) => {
         "Authorization": `Bearer ${token}`
       };
       
-      const [statsRes, clustersRes] = await Promise.all([
+      const [statsRes, clustersRes, thresholdsRes] = await Promise.all([
         fetch("/api/admin/dashboard", { headers }),
-        fetch("/api/admin/clusters", { headers })
+        fetch("/api/admin/clusters", { headers }),
+        fetch("/api/admin/risk-thresholds", { headers })
       ]);
       
       if (statsRes.ok) {
@@ -199,7 +402,19 @@ const AdminDashboard = ({ user }: { user: any }) => {
         }
       } else {
         console.error("Dashboard clusters fetch failed:", clustersRes.status, clustersRes.statusText);
-        setError(`Failed to fetch dashboard data: ${clustersRes.status} ${clustersRes.statusText}`);
+      }
+
+      if (thresholdsRes.ok) {
+        const contentType = thresholdsRes.headers.get("content-type");
+        if (contentType && contentType.includes("application/json")) {
+          setRiskThresholds(await thresholdsRes.json());
+        } else {
+          const text = await thresholdsRes.text();
+          console.error("Dashboard thresholds fetch returned non-JSON:", text.substring(0, 100));
+        }
+      } else {
+        console.error("Dashboard thresholds fetch failed:", thresholdsRes.status, thresholdsRes.statusText);
+        setError(`Failed to fetch dashboard data: ${thresholdsRes.status} ${thresholdsRes.statusText}`);
       }
     } catch (e) {
       console.error("Dashboard fetch error:", e);
@@ -218,7 +433,7 @@ const AdminDashboard = ({ user }: { user: any }) => {
     ws.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
-        if (data.type === 'NEW_CLAIM' || data.type === 'STATUS_UPDATE' || data.type === 'THRESHOLD_UPDATE') {
+        if (data.type === 'NEW_CLAIM' || data.type === 'STATUS_UPDATE' || data.type === 'THRESHOLD_UPDATE' || data.type === 'THRESHOLDS_UPDATED') {
           fetchDashboard();
         }
       } catch (e) {
@@ -279,6 +494,29 @@ const AdminDashboard = ({ user }: { user: any }) => {
     } catch (e) {
       console.error(e);
       alert("Error updating threshold");
+    }
+  };
+
+  const updateRiskThresholds = async (newThresholds: any) => {
+    try {
+      const res = await fetch("/api/admin/risk-thresholds", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${localStorage.getItem("token")}`
+        },
+        body: JSON.stringify(newThresholds)
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setRiskThresholds(data);
+      } else {
+        const data = await res.json();
+        alert(data.error || "Failed to update risk thresholds");
+      }
+    } catch (e) {
+      console.error(e);
+      alert("Error updating risk thresholds");
     }
   };
 
@@ -427,6 +665,93 @@ const AdminDashboard = ({ user }: { user: any }) => {
             )}
           </div>
         </div>
+
+        {/* Risk Configuration Section */}
+        {isAdmin && riskThresholds && (
+          <div className="col-span-full bg-white p-8 rounded-2xl border border-slate-100 shadow-sm space-y-6">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-indigo-50 rounded-lg">
+                  <Settings className="w-5 h-5 text-indigo-600" />
+                </div>
+                <h2 className="text-xl font-bold text-slate-900">Fraud Detection Configuration</h2>
+              </div>
+              <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">Last Updated: {new Date(riskThresholds.updated_at).toLocaleString()}</span>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+              <div className="space-y-4">
+                <div className="flex justify-between items-center">
+                  <label className="text-sm font-bold text-slate-700">Min Network Reputation</label>
+                  <span className="text-xs font-mono font-bold text-indigo-600">{(riskThresholds.min_network_reputation * 100).toFixed(0)}%</span>
+                </div>
+                <p className="text-xs text-slate-400 leading-tight">Minimum acceptable score for IP/Device reputation before flagging.</p>
+                <input 
+                  type="range" min="0" max="1" step="0.01" 
+                  value={riskThresholds.min_network_reputation} 
+                  onChange={(e) => updateRiskThresholds({ ...riskThresholds, min_network_reputation: parseFloat(e.target.value) })}
+                  className="w-full accent-indigo-600"
+                />
+              </div>
+
+              <div className="space-y-4">
+                <div className="flex justify-between items-center">
+                  <label className="text-sm font-bold text-slate-700">Max Sensor Variance</label>
+                  <span className="text-xs font-mono font-bold text-indigo-600">{(riskThresholds.max_sensor_variance * 100).toFixed(0)}%</span>
+                </div>
+                <p className="text-xs text-slate-400 leading-tight">Maximum allowed variance between GPS and motion sensors.</p>
+                <input 
+                  type="range" min="0" max="1" step="0.01" 
+                  value={riskThresholds.max_sensor_variance} 
+                  onChange={(e) => updateRiskThresholds({ ...riskThresholds, max_sensor_variance: parseFloat(e.target.value) })}
+                  className="w-full accent-indigo-600"
+                />
+              </div>
+
+              <div className="space-y-4">
+                <div className="flex justify-between items-center">
+                  <label className="text-sm font-bold text-slate-700">Max Behavioral Risk</label>
+                  <span className="text-xs font-mono font-bold text-indigo-600">{(riskThresholds.max_behavioral_risk * 100).toFixed(0)}%</span>
+                </div>
+                <p className="text-xs text-slate-400 leading-tight">Threshold for suspicious submission patterns and timing.</p>
+                <input 
+                  type="range" min="0" max="1" step="0.01" 
+                  value={riskThresholds.max_behavioral_risk} 
+                  onChange={(e) => updateRiskThresholds({ ...riskThresholds, max_behavioral_risk: parseFloat(e.target.value) })}
+                  className="w-full accent-indigo-600"
+                />
+              </div>
+
+              <div className="space-y-4">
+                <div className="flex justify-between items-center">
+                  <label className="text-sm font-bold text-slate-700">Max Graph Risk</label>
+                  <span className="text-xs font-mono font-bold text-indigo-600">{(riskThresholds.max_graph_risk * 100).toFixed(0)}%</span>
+                </div>
+                <p className="text-xs text-slate-400 leading-tight">Threshold for connection to known fraud clusters.</p>
+                <input 
+                  type="range" min="0" max="1" step="0.01" 
+                  value={riskThresholds.max_graph_risk} 
+                  onChange={(e) => updateRiskThresholds({ ...riskThresholds, max_graph_risk: parseFloat(e.target.value) })}
+                  className="w-full accent-indigo-600"
+                />
+              </div>
+
+              <div className="space-y-4">
+                <div className="flex justify-between items-center">
+                  <label className="text-sm font-bold text-slate-700">Overall Flag Threshold</label>
+                  <span className="text-xs font-mono font-bold text-red-600">{(riskThresholds.overall_flag_threshold * 100).toFixed(0)}%</span>
+                </div>
+                <p className="text-xs text-slate-400 leading-tight">Final Risk Score (FRS) that triggers an immediate security flag.</p>
+                <input 
+                  type="range" min="0" max="1" step="0.01" 
+                  value={riskThresholds.overall_flag_threshold} 
+                  onChange={(e) => updateRiskThresholds({ ...riskThresholds, overall_flag_threshold: parseFloat(e.target.value) })}
+                  className="w-full accent-red-600"
+                />
+              </div>
+            </div>
+          </div>
+        )}
 
         <div className="bg-white p-8 rounded-2xl border border-slate-100 shadow-sm">
           <h3 className="text-lg font-bold text-slate-900 mb-6">Risk Score Distribution</h3>
@@ -1295,6 +1620,52 @@ const UserProfile = () => {
           </div>
         ))}
       </div>
+
+      {profile.payouts && profile.payouts.length > 0 && (
+        <div className="bg-white rounded-2xl border border-slate-100 shadow-xl overflow-hidden">
+          <div className="px-8 py-6 bg-slate-50 border-b border-slate-100 flex justify-between items-center">
+            <div>
+              <h3 className="text-sm font-bold text-slate-900 uppercase tracking-widest">Payout History</h3>
+              <p className="text-xs text-slate-400 mt-1">Real-time confirmation of parametric payouts</p>
+            </div>
+            <div className="p-2 bg-emerald-100 rounded-lg">
+              <TrendingUp className="w-5 h-5 text-emerald-600" />
+            </div>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-left border-collapse">
+              <thead>
+                <tr className="bg-slate-50/50 border-b border-slate-100">
+                  <th className="px-8 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Transaction ID</th>
+                  <th className="px-8 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Date</th>
+                  <th className="px-8 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Amount</th>
+                  <th className="px-8 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Status</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {profile.payouts.map((payout: any) => (
+                  <tr key={payout.id} className="hover:bg-slate-50 transition-colors">
+                    <td className="px-8 py-4">
+                      <span className="text-xs font-mono font-medium text-slate-900">{payout.transaction_id}</span>
+                    </td>
+                    <td className="px-8 py-4">
+                      <span className="text-xs text-slate-500">{new Date(payout.timestamp).toLocaleString()}</span>
+                    </td>
+                    <td className="px-8 py-4">
+                      <span className="text-xs font-bold text-slate-900">${payout.amount.toLocaleString()}</span>
+                    </td>
+                    <td className="px-8 py-4">
+                      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider bg-emerald-50 text-emerald-600 border border-emerald-100">
+                        <CheckCircle className="w-3 h-3" /> {payout.status}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
@@ -1703,6 +2074,9 @@ export default function App() {
             ['admin', 'analyst', 'viewer'].includes(user.role) ? <AdminDashboard user={user} /> :
             <Navigate to="/claim" replace />
           } />
+          <Route path="/login" element={<LoginPage onLogin={setUser} />} />
+          <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+          <Route path="/reset-password" element={<ResetPasswordPage />} />
           <Route path="/admin" element={
             ['admin', 'analyst', 'viewer'].includes(user?.role) ? <AdminDashboard user={user} /> : <Navigate to="/" replace />
           } />

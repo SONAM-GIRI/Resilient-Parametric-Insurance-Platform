@@ -7,6 +7,7 @@ import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
 import Database from "better-sqlite3";
 import nodemailer from "nodemailer";
+import crypto from "crypto";
 import { fileURLToPath } from "url";
 import { dirname } from "path";
 import * as ss from "simple-statistics";
@@ -29,7 +30,9 @@ db.exec(`
     password TEXT,
     trust_score REAL DEFAULT 0.5,
     tenure_days INTEGER DEFAULT 0,
-    role TEXT DEFAULT 'worker'
+    role TEXT DEFAULT 'worker',
+    reset_token TEXT,
+    reset_token_expiry DATETIME
   );
 
   CREATE TABLE IF NOT EXISTS claims (
@@ -83,7 +86,35 @@ db.exec(`
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY(user_id) REFERENCES users(id)
   );
+
+  CREATE TABLE IF NOT EXISTS payouts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    claim_id INTEGER,
+    user_id INTEGER,
+    amount REAL,
+    transaction_id TEXT,
+    status TEXT DEFAULT 'completed',
+    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(claim_id) REFERENCES claims(id),
+    FOREIGN KEY(user_id) REFERENCES users(id)
+  );
+
+  CREATE TABLE IF NOT EXISTS risk_thresholds (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    min_network_reputation REAL DEFAULT 0.2,
+    max_sensor_variance REAL DEFAULT 0.8,
+    max_behavioral_risk REAL DEFAULT 0.8,
+    max_graph_risk REAL DEFAULT 0.8,
+    overall_flag_threshold REAL DEFAULT 0.7,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
 `);
+
+// Seed initial risk thresholds
+const thresholds = db.prepare("SELECT * FROM risk_thresholds").get();
+if (!thresholds) {
+  db.prepare("INSERT INTO risk_thresholds (min_network_reputation, max_sensor_variance, max_behavioral_risk, max_graph_risk, overall_flag_threshold) VALUES (?, ?, ?, ?, ?)").run(0.2, 0.8, 0.8, 0.8, 0.7);
+}
 
 // Seed initial liquidity
 const pool = db.prepare("SELECT * FROM liquidity_pool").get();
@@ -173,6 +204,10 @@ async function startServer() {
           subject = '❌ Claim Rejected: Review Complete';
           color = '#ef4444';
           title = 'Claim Rejected';
+        } else if (type === 'payout_confirmation') {
+          subject = '💸 Payout Confirmation: Funds Sent';
+          color = '#10b981';
+          title = 'Payout Confirmed';
         }
 
         const mailOptions = {
@@ -215,6 +250,40 @@ async function startServer() {
       }
     } catch (e) {
       console.error("Notification error:", e);
+    }
+  };
+
+  const processPayout = async (claimId: number, userId: number, amount: number) => {
+    try {
+      // 1. Update Liquidity Pool
+      db.prepare("UPDATE liquidity_pool SET balance = balance - ?").run(amount);
+      
+      // 2. Record Payout
+      const transactionId = `TX-${crypto.randomBytes(8).toString('hex').toUpperCase()}`;
+      db.prepare("INSERT INTO payouts (claim_id, user_id, amount, transaction_id) VALUES (?, ?, ?, ?)").run(claimId, userId, amount, transactionId);
+      
+      // 3. Log Liquidity History
+      const pool = db.prepare("SELECT balance FROM liquidity_pool").get() as any;
+      db.prepare("INSERT INTO liquidity_history (balance) VALUES (?)").run(pool.balance);
+
+      // 4. Send Notification
+      const message = `✅ PAYOUT CONFIRMED: Your payout of $${amount} for claim #${claimId} has been successfully processed. Transaction ID: ${transactionId}`;
+      await sendNotification(userId, 'payout_confirmation', message);
+
+      // 5. Broadcast update
+      broadcast({ 
+        type: 'PAYOUT_PROCESSED', 
+        claimId, 
+        userId, 
+        amount, 
+        transactionId,
+        newBalance: pool.balance
+      });
+
+      return transactionId;
+    } catch (e) {
+      console.error("Payout processing error:", e);
+      throw e;
     }
   };
 
@@ -387,6 +456,83 @@ async function startServer() {
     }
   });
 
+  app.post("/api/auth/forgot-password", async (req, res) => {
+    const { email } = req.body;
+    if (!email) {
+      return res.status(400).json({ error: "Email is required" });
+    }
+
+    const user = db.prepare("SELECT * FROM users WHERE email = ?").get(email) as any;
+    if (!user) {
+      // For security, don't reveal if user exists or not
+      return res.json({ message: "If an account with that email exists, we've sent a reset link." });
+    }
+
+    const token = crypto.randomBytes(32).toString('hex');
+    const expiry = new Date(Date.now() + 3600000).toISOString(); // 1 hour
+
+    db.prepare("UPDATE users SET reset_token = ?, reset_token_expiry = ? WHERE id = ?").run(token, expiry, user.id);
+
+    const resetLink = `${process.env.APP_URL || 'http://localhost:3000'}/reset-password?token=${token}`;
+
+    const mailOptions = {
+      from: process.env.SMTP_FROM || "noreply@resilient-insurance.com",
+      to: user.email,
+      subject: "🔒 Password Reset Request",
+      html: `
+        <div style="font-family: 'Inter', sans-serif; max-width: 600px; margin: 0 auto; padding: 40px; border: 1px solid #f1f5f9; border-radius: 24px; background-color: #ffffff; color: #1e293b;">
+          <div style="margin-bottom: 32px; text-align: center;">
+            <div style="display: inline-block; padding: 12px; background-color: #4f46e510; border-radius: 16px;">
+              <span style="font-size: 24px;">🔒</span>
+            </div>
+          </div>
+          <h2 style="color: #4f46e5; font-size: 24px; font-weight: 800; margin-bottom: 16px; text-align: center; letter-spacing: -0.025em;">Reset Your Password</h2>
+          <p style="font-size: 16px; line-height: 1.6; margin-bottom: 32px; text-align: center; color: #475569;">
+            We received a request to reset your password. Click the button below to set a new one. This link will expire in 1 hour.
+          </p>
+          <div style="text-align: center;">
+            <a href="${resetLink}" style="display: inline-block; padding: 14px 28px; background-color: #4f46e5; color: #ffffff; text-decoration: none; border-radius: 12px; font-weight: 600; font-size: 14px; transition: all 0.2s ease;">Reset Password</a>
+          </div>
+          <hr style="border: none; border-top: 1px solid #f1f5f9; margin: 40px 0;" />
+          <p style="font-size: 12px; color: #94a3b8; text-align: center;">
+            If you didn't request this, you can safely ignore this email.
+          </p>
+          <p style="font-size: 10px; color: #cbd5e1; text-align: center; margin-top: 8px;">
+            &copy; 2026 Resilient Insurance. All rights reserved.
+          </p>
+        </div>
+      `
+    };
+
+    if (process.env.SMTP_USER) {
+      await transporter.sendMail(mailOptions);
+    } else {
+      console.log("--- MOCK RESET EMAIL SENT ---");
+      console.log(`To: ${user.email}`);
+      console.log(`Reset Link: ${resetLink}`);
+      console.log("------------------------------");
+    }
+
+    res.json({ message: "If an account with that email exists, we've sent a reset link." });
+  });
+
+  app.post("/api/auth/reset-password", async (req, res) => {
+    const { token, password } = req.body;
+    if (!token || !password) {
+      return res.status(400).json({ error: "Token and new password are required" });
+    }
+
+    const user = db.prepare("SELECT * FROM users WHERE reset_token = ? AND reset_token_expiry > ?").get(token, new Date().toISOString()) as any;
+    if (!user) {
+      return res.status(400).json({ error: "Invalid or expired reset token" });
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+    db.prepare("UPDATE users SET password = ?, reset_token = NULL, reset_token_expiry = NULL WHERE id = ?").run(hashedPassword, user.id);
+
+    res.json({ message: "Password updated successfully" });
+  });
+
   app.post("/api/claims/submit", authorize(), async (req, res) => {
     try {
       const userId = (req as any).user.id;
@@ -433,20 +579,29 @@ async function startServer() {
       // 3. Decision
       const pool = db.prepare("SELECT payout_threshold FROM liquidity_pool").get() as any;
       const threshold = pool ? pool.payout_threshold : 0.3;
+      
+      const riskThresholds = db.prepare("SELECT * FROM risk_thresholds ORDER BY updated_at DESC LIMIT 1").get() as any;
 
       let status = "pending";
-      if (frs < threshold) status = "approved";
-      else if (frs >= 0.7) status = "flagged";
+      
+      // Check for immediate fraud alerts based on individual thresholds
+      const isNetworkRiskHigh = (1 - networkRisk) < riskThresholds.min_network_reputation;
+      const isSensorRiskHigh = sensorScore > riskThresholds.max_sensor_variance;
+      const isBehavioralRiskHigh = behavioralScore > riskThresholds.max_behavioral_risk;
+      const isGraphRiskHigh = graphRisk > riskThresholds.max_graph_risk;
+      const isOverallRiskHigh = frs >= riskThresholds.overall_flag_threshold;
+
+      if (isNetworkRiskHigh || isSensorRiskHigh || isBehavioralRiskHigh || isGraphRiskHigh || isOverallRiskHigh) {
+        status = "flagged";
+      } else if (frs < threshold) {
+        status = "approved";
+      }
 
       // 4. Update Reputation based on initial decision
       updateNetworkReputation(network.ip, 'ip', status === 'flagged');
       updateNetworkReputation(network.deviceId, 'device', status === 'flagged');
 
-      // 5. Update Liquidity & Payout
-      if (status === "approved") {
-        db.prepare("UPDATE liquidity_pool SET balance = balance - ?").run(amount);
-      }
-
+      // 5. Save Claim to DB
       const info = db.prepare(`
         INSERT INTO claims (user_id, amount, weather_condition, gps_data, sensor_data, network_info, risk_score, status)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -454,7 +609,7 @@ async function startServer() {
 
       const claimId = info.lastInsertRowid;
 
-      // Broadcast new claim
+      // 6. Broadcast new claim
       broadcast({ 
         type: 'NEW_CLAIM', 
         claim: {
@@ -469,9 +624,9 @@ async function startServer() {
         }
       });
 
-      // 5. Trigger Notifications
+      // 7. Update Liquidity & Payout
       if (status === "approved") {
-        await sendNotification(userId, 'status_change', `Your claim for $${amount} has been automatically approved and processed.`);
+        await processPayout(Number(claimId), userId, amount);
       } else if (status === "flagged") {
         await sendNotification(userId, 'fraud_alert', `Your claim for $${amount} has been flagged for manual review due to high risk indicators.`);
         
@@ -592,7 +747,10 @@ async function startServer() {
         networkReputation: networkReputation
       };
 
-      res.json({ ...user, trust_score: finalTrustScore, breakdown });
+      // Fetch payouts
+      const payouts = db.prepare("SELECT * FROM payouts WHERE user_id = ? ORDER BY timestamp DESC").all(userId) as any[];
+
+      res.json({ ...user, trust_score: finalTrustScore, breakdown, payouts });
     } catch (e) {
       console.error("Profile error:", e);
       res.status(500).json({ error: "Internal Server Error" });
@@ -723,9 +881,19 @@ async function startServer() {
 
       // Handle liquidity if approved manually
       if (status === "approved" && oldStatus !== "approved") {
-        db.prepare("UPDATE liquidity_pool SET balance = balance - ?").run(claim.amount);
+        await processPayout(Number(claimId), claim.user_id, claim.amount);
       } else if (oldStatus === "approved" && status !== "approved") {
+        // Revert liquidity if status changed from approved to something else
         db.prepare("UPDATE liquidity_pool SET balance = balance + ?").run(claim.amount);
+        const newBalance = db.prepare("SELECT balance FROM liquidity_pool").get().balance;
+        db.prepare("INSERT INTO liquidity_history (balance) VALUES (?)").run(newBalance);
+        
+        broadcast({ 
+          type: 'LIQUIDITY_REVERTED', 
+          claimId, 
+          amount: claim.amount,
+          newBalance 
+        });
       }
 
       let notificationType = 'status_change';
@@ -776,6 +944,36 @@ async function startServer() {
       res.json({ message: "Payout threshold updated", threshold });
     } catch (e) {
       console.error("Threshold update error:", e);
+      res.status(500).json({ error: "Internal Server Error" });
+    }
+  });
+
+  app.get("/api/admin/risk-thresholds", authorize(["admin", "analyst", "viewer"]), (req, res) => {
+    try {
+      const thresholds = db.prepare("SELECT * FROM risk_thresholds ORDER BY updated_at DESC LIMIT 1").get();
+      res.json(thresholds);
+    } catch (e) {
+      console.error("Get thresholds error:", e);
+      res.status(500).json({ error: "Internal Server Error" });
+    }
+  });
+
+  app.post("/api/admin/risk-thresholds", authorize(["admin"]), (req, res) => {
+    try {
+      const { min_network_reputation, max_sensor_variance, max_behavioral_risk, max_graph_risk, overall_flag_threshold } = req.body;
+      
+      db.prepare(`
+        INSERT INTO risk_thresholds (min_network_reputation, max_sensor_variance, max_behavioral_risk, max_graph_risk, overall_flag_threshold)
+        VALUES (?, ?, ?, ?, ?)
+      `).run(min_network_reputation, max_sensor_variance, max_behavioral_risk, max_graph_risk, overall_flag_threshold);
+      
+      const newThresholds = db.prepare("SELECT * FROM risk_thresholds ORDER BY updated_at DESC LIMIT 1").get();
+      
+      broadcast({ type: 'THRESHOLDS_UPDATED', thresholds: newThresholds });
+      
+      res.json(newThresholds);
+    } catch (e) {
+      console.error("Update thresholds error:", e);
       res.status(500).json({ error: "Internal Server Error" });
     }
   });
