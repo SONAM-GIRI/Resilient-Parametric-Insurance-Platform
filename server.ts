@@ -12,6 +12,8 @@ import { dirname } from "path";
 import * as ss from "simple-statistics";
 import Graph from "graphology";
 import louvain from "graphology-communities-louvain";
+import { WebSocketServer, WebSocket } from "ws";
+import http from "http";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -42,6 +44,15 @@ db.exec(`
     status TEXT DEFAULT 'pending',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY(user_id) REFERENCES users(id)
+  );
+
+  CREATE TABLE IF NOT EXISTS network_reputation (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    identifier TEXT UNIQUE,
+    type TEXT, -- 'ip' or 'device'
+    fraud_count INTEGER DEFAULT 0,
+    legitimate_count INTEGER DEFAULT 0,
+    reputation_score REAL DEFAULT 0.5 -- 0 (bad) to 1 (good)
   );
 
   CREATE TABLE IF NOT EXISTS fraud_clusters (
@@ -111,7 +122,17 @@ if (!viewer) {
 
 async function startServer() {
   const app = express();
+  const server = http.createServer(app);
+  const wss = new WebSocketServer({ server });
   const PORT = 3000;
+
+  const broadcast = (data: any) => {
+    wss.clients.forEach((client) => {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(JSON.stringify(data));
+      }
+    });
+  };
 
   app.use(cors());
   app.use(morgan("dev"));
@@ -136,17 +157,50 @@ async function startServer() {
       // 2. Send Email
       const user = db.prepare("SELECT email FROM users WHERE id = ?").get(userId) as any;
       if (user && user.email) {
+        let subject = '📋 Claim Status Update';
+        let color = '#4f46e5';
+        let title = 'Claim Update';
+
+        if (type === 'fraud_alert') {
+          subject = '⚠️ SECURITY ALERT: Suspicious Activity Detected';
+          color = '#ef4444';
+          title = 'Security Alert';
+        } else if (message.includes('APPROVED')) {
+          subject = '✅ Claim Approved: Payout Processed';
+          color = '#10b981';
+          title = 'Claim Approved';
+        } else if (message.includes('REJECTED')) {
+          subject = '❌ Claim Rejected: Review Complete';
+          color = '#ef4444';
+          title = 'Claim Rejected';
+        }
+
         const mailOptions = {
           from: process.env.SMTP_FROM || "noreply@resilient-insurance.com",
           to: user.email,
-          subject: type === 'fraud_alert' ? '⚠️ SECURITY ALERT: Suspicious Activity Detected' : '📋 Claim Status Update',
+          subject: subject,
           text: message,
-          html: `<div style="font-family: sans-serif; padding: 20px; border: 1px solid #eee; border-radius: 10px;">
-            <h2 style="color: ${type === 'fraud_alert' ? '#ef4444' : '#4f46e5'}">${type === 'fraud_alert' ? 'Security Alert' : 'Claim Update'}</h2>
-            <p>${message}</p>
-            <hr style="border: none; border-top: 1px solid #eee; margin: 20px 0;" />
-            <p style="font-size: 12px; color: #666;">This is an automated notification from Resilient Insurance.</p>
-          </div>`
+          html: `
+            <div style="font-family: 'Inter', sans-serif; max-width: 600px; margin: 0 auto; padding: 40px; border: 1px solid #f1f5f9; border-radius: 24px; background-color: #ffffff; color: #1e293b;">
+              <div style="margin-bottom: 32px; text-align: center;">
+                <div style="display: inline-block; padding: 12px; background-color: ${color}10; border-radius: 16px;">
+                  <span style="font-size: 24px;">${type === 'fraud_alert' ? '⚠️' : '📋'}</span>
+                </div>
+              </div>
+              <h2 style="color: ${color}; font-size: 24px; font-weight: 800; margin-bottom: 16px; text-align: center; letter-spacing: -0.025em;">${title}</h2>
+              <p style="font-size: 16px; line-height: 1.6; margin-bottom: 32px; text-align: center; color: #475569;">${message}</p>
+              <div style="text-align: center;">
+                <a href="${process.env.APP_URL || 'http://localhost:3000'}/history" style="display: inline-block; padding: 14px 28px; background-color: ${color}; color: #ffffff; text-decoration: none; border-radius: 12px; font-weight: 600; font-size: 14px; transition: all 0.2s ease;">View Claim History</a>
+              </div>
+              <hr style="border: none; border-top: 1px solid #f1f5f9; margin: 40px 0;" />
+              <p style="font-size: 12px; color: #94a3b8; text-align: center;">
+                This is an automated notification from ParametricGuard. If you have questions, please contact our support team.
+              </p>
+              <p style="font-size: 10px; color: #cbd5e1; text-align: center; margin-top: 8px;">
+                &copy; 2026 Resilient Insurance. All rights reserved.
+              </p>
+            </div>
+          `
         };
 
         if (process.env.SMTP_USER) {
@@ -169,9 +223,11 @@ async function startServer() {
     return (req: any, res: any, next: any) => {
       try {
         const authHeader = req.headers.authorization;
-        if (!authHeader) return res.status(401).json({ error: "Unauthorized" });
+        if (!authHeader) return res.status(401).json({ error: "Unauthorized: No token provided" });
         
         const token = authHeader.split(" ")[1];
+        if (!token) return res.status(401).json({ error: "Unauthorized: Invalid token format" });
+
         const decoded = jwt.verify(token, JWT_SECRET) as any;
         req.user = decoded;
 
@@ -180,7 +236,8 @@ async function startServer() {
         }
         next();
       } catch (e) {
-        res.status(401).json({ error: "Invalid token" });
+        console.error("Auth error:", e);
+        res.status(401).json({ error: "Invalid or expired token" });
       }
     };
   };
@@ -225,6 +282,29 @@ async function startServer() {
     if (hour < 5 || hour > 23) score += 0.4;
 
     return Math.min(score, 1.0);
+  };
+
+  const getNetworkReputation = (identifier: string, type: 'ip' | 'device') => {
+    const rep = db.prepare("SELECT reputation_score FROM network_reputation WHERE identifier = ? AND type = ?").get(identifier, type) as any;
+    return rep ? rep.reputation_score : 0.5; // Default to 0.5 (neutral)
+  };
+
+  const updateNetworkReputation = (identifier: string, type: 'ip' | 'device', isFraud: boolean) => {
+    const rep = db.prepare("SELECT * FROM network_reputation WHERE identifier = ? AND type = ?").get(identifier, type) as any;
+    
+    if (!rep) {
+      const fraudCount = isFraud ? 1 : 0;
+      const legitimateCount = isFraud ? 0 : 1;
+      const score = (legitimateCount + 1) / (fraudCount + legitimateCount + 2);
+      db.prepare("INSERT INTO network_reputation (identifier, type, fraud_count, legitimate_count, reputation_score) VALUES (?, ?, ?, ?, ?)")
+        .run(identifier, type, fraudCount, legitimateCount, score);
+    } else {
+      const fraudCount = rep.fraud_count + (isFraud ? 1 : 0);
+      const legitimateCount = rep.legitimate_count + (isFraud ? 0 : 1);
+      const score = (legitimateCount + 1) / (fraudCount + legitimateCount + 2);
+      db.prepare("UPDATE network_reputation SET fraud_count = ?, legitimate_count = ?, reputation_score = ? WHERE identifier = ? AND type = ?")
+        .run(fraudCount, legitimateCount, score, identifier, type);
+    }
   };
 
   const detectFraudClusters = () => {
@@ -277,30 +357,70 @@ async function startServer() {
 
   app.post("/api/auth/login", async (req, res) => {
     const { email, password } = req.body;
+    
+    if (!email || !password) {
+      return res.status(400).json({ error: "Email and password are required" });
+    }
+
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      return res.status(400).json({ error: "Invalid email format" });
+    }
+
     const user = db.prepare("SELECT * FROM users WHERE email = ?").get(email) as any;
     if (user && await bcrypt.compare(password, user.password)) {
-      const token = jwt.sign({ id: user.id, role: user.role }, JWT_SECRET);
+      const token = jwt.sign({ id: user.id, email: user.email, role: user.role }, JWT_SECRET, { expiresIn: '1h' });
       res.json({ token, user: { id: user.id, email: user.email, role: user.role } });
     } else {
       res.status(401).json({ error: "Invalid credentials" });
     }
   });
 
-  app.post("/api/claims/submit", async (req, res) => {
+  app.post("/api/auth/refresh", authorize(), (req, res) => {
     try {
-      const authHeader = req.headers.authorization;
-      if (!authHeader) return res.status(401).json({ error: "Unauthorized" });
-      
-      const token = authHeader.split(" ")[1];
-      const decoded = jwt.verify(token, JWT_SECRET) as any;
-      const userId = decoded.id;
+      const user = (req as any).user;
+      // Fetch user from DB to get latest email/role if needed, but for now just use decoded info
+      const token = jwt.sign({ id: user.id, email: user.email, role: user.role }, JWT_SECRET, { expiresIn: '1h' });
+      res.json({ token });
+    } catch (e) {
+      res.status(401).json({ error: "Could not refresh token" });
+    }
+  });
 
+  app.post("/api/claims/submit", authorize(), async (req, res) => {
+    try {
+      const userId = (req as any).user.id;
       const { amount, weather, gps, sensors, network } = req.body;
+
+      if (typeof amount !== 'number' || amount <= 0) {
+        return res.status(400).json({ error: "Invalid claim amount. Must be a positive number." });
+      }
+
+      if (!weather || typeof weather !== 'string') {
+        return res.status(400).json({ error: "Weather condition is required." });
+      }
+
+      if (!Array.isArray(gps) || gps.length === 0) {
+        return res.status(400).json({ error: "GPS data is required." });
+      }
+
+      if (!sensors || typeof sensors !== 'object') {
+        return res.status(400).json({ error: "Sensor data is required." });
+      }
+
+      if (!network || typeof network !== 'object' || !network.ip || !network.deviceId) {
+        return res.status(400).json({ error: "Network info (IP and Device ID) is required." });
+      }
 
       // 1. Calculate Scores
       const sensorScore = calculateSensorScore(gps, sensors);
       const behavioralScore = calculateBehavioralScore(userId, req.body);
       
+      // Network Reputation
+      const ipRep = getNetworkReputation(network.ip, 'ip');
+      const deviceRep = getNetworkReputation(network.deviceId, 'device');
+      const networkRisk = 1 - ((ipRep + deviceRep) / 2);
+
       // Graph check
       const clusters = detectFraudClusters();
       const clusterId = clusters[userId];
@@ -308,14 +428,21 @@ async function startServer() {
       const graphRisk = clusterSize > 2 ? 0.8 : 0.1;
 
       // 2. Final Risk Score (FRS)
-      const frs = (0.35 * sensorScore) + (0.30 * behavioralScore) + (0.20 * 0.1) + (0.15 * graphRisk);
+      const frs = (0.30 * sensorScore) + (0.25 * behavioralScore) + (0.20 * networkRisk) + (0.15 * graphRisk) + (0.10 * 0.1);
 
       // 3. Decision
+      const pool = db.prepare("SELECT payout_threshold FROM liquidity_pool").get() as any;
+      const threshold = pool ? pool.payout_threshold : 0.3;
+
       let status = "pending";
-      if (frs < 0.3) status = "approved";
+      if (frs < threshold) status = "approved";
       else if (frs >= 0.7) status = "flagged";
 
-      // 4. Update Liquidity & Payout
+      // 4. Update Reputation based on initial decision
+      updateNetworkReputation(network.ip, 'ip', status === 'flagged');
+      updateNetworkReputation(network.deviceId, 'device', status === 'flagged');
+
+      // 5. Update Liquidity & Payout
       if (status === "approved") {
         db.prepare("UPDATE liquidity_pool SET balance = balance - ?").run(amount);
       }
@@ -326,6 +453,21 @@ async function startServer() {
       `).run(userId, amount, weather, JSON.stringify(gps), JSON.stringify(sensors), JSON.stringify(network), frs, status);
 
       const claimId = info.lastInsertRowid;
+
+      // Broadcast new claim
+      broadcast({ 
+        type: 'NEW_CLAIM', 
+        claim: {
+          id: claimId,
+          user_id: userId,
+          amount,
+          weather_condition: weather,
+          risk_score: frs,
+          status,
+          created_at: new Date().toISOString(),
+          email: db.prepare("SELECT email FROM users WHERE id = ?").get(userId).email
+        }
+      });
 
       // 5. Trigger Notifications
       if (status === "approved") {
@@ -349,15 +491,10 @@ async function startServer() {
     }
   });
 
-  app.get("/api/claims/:id", (req, res) => {
+  app.get("/api/claims/:id", authorize(), (req, res) => {
     try {
-      const authHeader = req.headers.authorization;
-      if (!authHeader) return res.status(401).json({ error: "Unauthorized" });
-      
-      const token = authHeader.split(" ")[1];
-      const decoded = jwt.verify(token, JWT_SECRET) as any;
-      const userId = decoded.id;
-      const userRole = decoded.role;
+      const userId = (req as any).user.id;
+      const userRole = (req as any).user.role;
 
       const claim = db.prepare(`
         SELECT c.*, u.email 
@@ -368,8 +505,8 @@ async function startServer() {
 
       if (!claim) return res.status(404).json({ error: "Claim not found" });
 
-      // Only allow owner or admin to see details
-      if (userRole !== "admin" && claim.user_id !== userId) {
+      // Only allow owner or admin roles to see details
+      if (!['admin', 'analyst', 'viewer'].includes(userRole) && claim.user_id !== userId) {
         return res.status(403).json({ error: "Forbidden" });
       }
 
@@ -380,15 +517,9 @@ async function startServer() {
     }
   });
 
-  app.get("/api/claims/history", (req, res) => {
+  app.get("/api/claims/history", authorize(), (req, res) => {
     try {
-      const authHeader = req.headers.authorization;
-      if (!authHeader) return res.status(401).json({ error: "Unauthorized" });
-      
-      const token = authHeader.split(" ")[1];
-      const decoded = jwt.verify(token, JWT_SECRET) as any;
-      const userId = decoded.id;
-
+      const userId = (req as any).user.id;
       const claims = db.prepare("SELECT * FROM claims WHERE user_id = ? ORDER BY created_at DESC").all(userId);
       res.json(claims);
     } catch (e) {
@@ -397,26 +528,71 @@ async function startServer() {
     }
   });
 
-  app.get("/api/user/profile", (req, res) => {
+  app.get("/api/user/profile", authorize(), (req, res) => {
     try {
-      const authHeader = req.headers.authorization;
-      if (!authHeader) return res.status(401).json({ error: "Unauthorized" });
-      
-      const token = authHeader.split(" ")[1];
-      const decoded = jwt.verify(token, JWT_SECRET) as any;
-      const userId = decoded.id;
+      const userId = (req as any).user.id;
 
       const user = db.prepare("SELECT id, email, role, trust_score, tenure_days FROM users WHERE id = ?").get(userId) as any;
       if (!user) return res.status(404).json({ error: "User not found" });
 
-      // Calculate contribution breakdown (simulated for now)
+      // Fetch claims to calculate history and sensor reliability
+      const claims = db.prepare("SELECT status, risk_score, network_info FROM claims WHERE user_id = ?").all(userId) as any[];
+      
+      // 1. Tenure Score (0-1) - Maxes out at 1 year
+      const tenureScore = Math.min(user.tenure_days / 365, 1.0);
+
+      // 2. Claim History Score (0-1)
+      let claimHistoryScore = 0.5; // Default for new users
+      if (claims.length > 0) {
+        const approved = claims.filter(c => c.status === 'approved').length;
+        const rejected = claims.filter(c => c.status === 'rejected' || c.status === 'flagged').length;
+        claimHistoryScore = (approved + 1) / (approved + rejected + 2); // Laplace smoothing
+      }
+
+      // 3. Sensor Reliability (0-1)
+      // (1 - average risk_score) as a proxy for reliability
+      let sensorReliability = 0.7; // Default
+      if (claims.length > 0) {
+        const avgRisk = claims.reduce((acc, c) => acc + c.risk_score, 0) / claims.length;
+        sensorReliability = 1 - avgRisk;
+      }
+
+      // 4. Network Reputation (0-1)
+      let networkReputation = 0.5; // Default
+      if (claims.length > 0) {
+        const lastClaim = claims[claims.length - 1];
+        try {
+          const netInfo = JSON.parse(lastClaim.network_info);
+          const ipRep = db.prepare("SELECT reputation_score FROM network_reputation WHERE identifier = ?").get(netInfo.ip) as any;
+          const devRep = db.prepare("SELECT reputation_score FROM network_reputation WHERE identifier = ?").get(netInfo.deviceId) as any;
+          
+          if (ipRep && devRep) {
+            networkReputation = (ipRep.reputation_score + devRep.reputation_score) / 2;
+          } else if (ipRep) {
+            networkReputation = ipRep.reputation_score;
+          } else if (devRep) {
+            networkReputation = devRep.reputation_score;
+          }
+        } catch (e) {
+          // Ignore parse errors
+        }
+      }
+
+      // Final Trust Score Calculation (weighted)
+      // 20% Tenure, 40% History, 20% Sensors, 20% Network
+      const finalTrustScore = (tenureScore * 0.2) + (claimHistoryScore * 0.4) + (sensorReliability * 0.2) + (networkReputation * 0.2);
+      
+      // Update user's trust score in DB
+      db.prepare("UPDATE users SET trust_score = ? WHERE id = ?").run(finalTrustScore, userId);
+
       const breakdown = {
-        tenure: Math.min(user.tenure_days / 365, 0.3),
-        claimHistory: 0.4, // Base score for good history
-        sensorConsistency: 0.3 // Base score for consistent sensor data
+        tenure: tenureScore,
+        claimHistory: claimHistoryScore,
+        sensorReliability: sensorReliability,
+        networkReputation: networkReputation
       };
 
-      res.json({ ...user, breakdown });
+      res.json({ ...user, trust_score: finalTrustScore, breakdown });
     } catch (e) {
       console.error("Profile error:", e);
       res.status(500).json({ error: "Internal Server Error" });
@@ -480,14 +656,38 @@ async function startServer() {
     }
   });
 
+  app.get("/api/admin/claims/search", authorize(["admin", "analyst", "viewer"]), (req, res) => {
+    try {
+      const { q } = req.query;
+      if (!q) return res.json([]);
+      
+      const query = `%${q}%`;
+      const claims = db.prepare(`
+        SELECT c.*, u.email 
+        FROM claims c 
+        JOIN users u ON c.user_id = u.id 
+        WHERE u.email LIKE ? OR CAST(c.id AS TEXT) LIKE ?
+        ORDER BY c.created_at DESC 
+        LIMIT 50
+      `).all(query, query);
+      
+      res.json(claims);
+    } catch (e) {
+      console.error("Search error:", e);
+      res.status(500).json({ error: "Internal Server Error" });
+    }
+  });
+
   app.get("/api/admin/dashboard", authorize(["admin", "analyst", "viewer"]), (req, res) => {
     try {
+      const pool = db.prepare("SELECT balance, payout_threshold FROM liquidity_pool").get() as any;
       const stats = {
         totalClaims: db.prepare("SELECT COUNT(*) as count FROM claims").get() as any,
         fraudRate: db.prepare("SELECT AVG(risk_score) as avg FROM claims").get() as any,
         avgTrustScore: db.prepare("SELECT AVG(trust_score) as avg FROM users").get() as any,
         liquidity: {
-          balance: (db.prepare("SELECT balance FROM liquidity_pool").get() as any).balance,
+          balance: pool.balance,
+          payoutThreshold: pool.payout_threshold,
           history: db.prepare("SELECT balance, timestamp FROM (SELECT * FROM liquidity_history ORDER BY timestamp DESC LIMIT 24) ORDER BY timestamp ASC").all()
         },
         recentClaims: db.prepare("SELECT c.*, u.email FROM claims c JOIN users u ON c.user_id = u.id ORDER BY created_at DESC LIMIT 10").all(),
@@ -505,11 +705,21 @@ async function startServer() {
       const { status } = req.body;
       const claimId = req.params.id;
 
+      const validStatuses = ['pending', 'approved', 'flagged', 'rejected'];
+      if (!validStatuses.includes(status)) {
+        return res.status(400).json({ error: `Invalid status. Must be one of: ${validStatuses.join(', ')}` });
+      }
+
       const claim = db.prepare("SELECT * FROM claims WHERE id = ?").get(claimId) as any;
       if (!claim) return res.status(404).json({ error: "Claim not found" });
 
       const oldStatus = claim.status;
       db.prepare("UPDATE claims SET status = ? WHERE id = ?").run(status, claimId);
+
+      // Update network reputation based on manual review
+      const networkInfo = JSON.parse(claim.network_info || "{}");
+      if (networkInfo.ip) updateNetworkReputation(networkInfo.ip, 'ip', status === 'flagged' || status === 'rejected');
+      if (networkInfo.deviceId) updateNetworkReputation(networkInfo.deviceId, 'device', status === 'flagged' || status === 'rejected');
 
       // Handle liquidity if approved manually
       if (status === "approved" && oldStatus !== "approved") {
@@ -518,11 +728,54 @@ async function startServer() {
         db.prepare("UPDATE liquidity_pool SET balance = balance + ?").run(claim.amount);
       }
 
-      await sendNotification(claim.user_id, 'status_change', `The status of your claim for $${claim.amount} has been updated to: ${status.toUpperCase()}.`);
+      let notificationType = 'status_change';
+      let notificationMessage = `The status of your claim for $${claim.amount} has been updated to: ${status.toUpperCase()}.`;
+
+      if (status === 'flagged') {
+        notificationType = 'fraud_alert';
+        notificationMessage = `⚠️ SECURITY ALERT: Your claim for $${claim.amount} has been flagged for suspicious activity and is under manual review.`;
+      } else if (status === 'rejected') {
+        notificationType = 'fraud_alert';
+        notificationMessage = `❌ CLAIM REJECTED: Your claim for $${claim.amount} has been rejected following a forensic review.`;
+      } else if (status === 'approved') {
+        notificationMessage = `✅ CLAIM APPROVED: Your claim for $${claim.amount} has been approved and the payout of $${claim.amount} has been processed.`;
+      }
+
+      await sendNotification(claim.user_id, notificationType, notificationMessage);
+
+      // Broadcast status change
+      broadcast({ 
+        type: 'STATUS_UPDATE', 
+        claimId, 
+        userId: claim.user_id, 
+        status,
+        newBalance: db.prepare("SELECT balance FROM liquidity_pool").get().balance
+      });
 
       res.json({ message: "Status updated", status });
     } catch (e) {
       console.error("Status update error:", e);
+      res.status(500).json({ error: "Internal Server Error" });
+    }
+  });
+
+  app.post("/api/admin/liquidity/threshold", authorize(["admin"]), async (req, res) => {
+    try {
+      const { threshold } = req.body;
+      if (typeof threshold !== 'number' || threshold < 0 || threshold > 1) {
+        return res.status(400).json({ error: "Invalid threshold. Must be a number between 0 and 1." });
+      }
+
+      db.prepare("UPDATE liquidity_pool SET payout_threshold = ?").run(threshold);
+      
+      broadcast({ 
+        type: 'THRESHOLD_UPDATE', 
+        threshold 
+      });
+
+      res.json({ message: "Payout threshold updated", threshold });
+    } catch (e) {
+      console.error("Threshold update error:", e);
       res.status(500).json({ error: "Internal Server Error" });
     }
   });
@@ -536,6 +789,22 @@ async function startServer() {
       console.error("Notifications fetch error:", e);
       res.status(500).json({ error: "Internal Server Error" });
     }
+  });
+
+  app.post("/api/notifications/read-all", authorize(), (req, res) => {
+    try {
+      const userId = (req as any).user.id;
+      db.prepare("UPDATE notifications SET is_read = 1 WHERE user_id = ?").run(userId);
+      res.json({ message: "All notifications marked as read" });
+    } catch (e) {
+      console.error("Notifications update error:", e);
+      res.status(500).json({ error: "Internal Server Error" });
+    }
+  });
+
+  // API 404 handler
+  app.all("/api/*", (req, res) => {
+    res.status(404).json({ error: `API route not found: ${req.method} ${req.url}` });
   });
 
   // --- VITE MIDDLEWARE ---
@@ -554,7 +823,7 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
+  server.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
   });
 }

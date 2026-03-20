@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { BrowserRouter as Router, Routes, Route, Link, useNavigate, useParams } from "react-router-dom";
+import { BrowserRouter as Router, Routes, Route, Link, useNavigate, useParams, Navigate } from "react-router-dom";
 import { 
   Shield, 
   LayoutDashboard, 
@@ -21,7 +21,8 @@ import {
   Cpu,
   ChevronRight,
   ChevronLeft,
-  Bell
+  Bell,
+  Search
 } from "lucide-react";
 import { 
   LineChart, 
@@ -33,7 +34,12 @@ import {
   ResponsiveContainer,
   BarChart,
   Bar,
-  Cell
+  Cell,
+  RadarChart,
+  Radar,
+  PolarGrid,
+  PolarAngleAxis,
+  PolarRadiusAxis
 } from "recharts";
 import { motion, AnimatePresence } from "framer-motion";
 
@@ -46,16 +52,39 @@ const LoginPage = ({ onLogin }: { onLogin: (user: any) => void }) => {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    
+    if (!email || !password) {
+      alert("Please enter both email and password.");
+      return;
+    }
+
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      alert("Please enter a valid email address.");
+      return;
+    }
+
     const res = await fetch("/api/auth/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email, password })
     });
-    const data = await res.json();
-    if (data.token) {
-      localStorage.setItem("token", data.token);
-      onLogin(data.user);
-      navigate(['admin', 'analyst', 'viewer'].includes(data.user.role) ? "/admin" : "/claim");
+    
+    const contentType = res.headers.get("content-type");
+    if (contentType && contentType.includes("application/json")) {
+      const data = await res.json();
+      if (data.token) {
+        localStorage.setItem("token", data.token);
+        const payload = JSON.parse(atob(data.token.split(".")[1]));
+        onLogin(payload);
+        navigate(['admin', 'analyst', 'viewer'].includes(payload.role) ? "/admin" : "/claim");
+      } else {
+        alert(data.error || "Login failed. Please check your credentials.");
+      }
+    } else {
+      const text = await res.text();
+      console.error("Login fetch returned non-JSON:", text.substring(0, 100));
+      alert("Server error: Received invalid response format.");
     }
   };
 
@@ -125,29 +154,101 @@ const LoginPage = ({ onLogin }: { onLogin: (user: any) => void }) => {
 const AdminDashboard = ({ user }: { user: any }) => {
   const [stats, setStats] = useState<any>(null);
   const [clusters, setClusters] = useState<any[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<any[] | null>(null);
+  const [isSearching, setIsSearching] = useState(false);
   const navigate = useNavigate();
 
+  const fetchDashboard = useCallback(async () => {
+    try {
+      const token = localStorage.getItem("token");
+      if (!token) {
+        console.error("No token found in localStorage");
+        return;
+      }
+
+      const headers = { 
+        "Authorization": `Bearer ${token}`
+      };
+      
+      const [statsRes, clustersRes] = await Promise.all([
+        fetch("/api/admin/dashboard", { headers }),
+        fetch("/api/admin/clusters", { headers })
+      ]);
+      
+      if (statsRes.ok) {
+        const contentType = statsRes.headers.get("content-type");
+        if (contentType && contentType.includes("application/json")) {
+          setStats(await statsRes.json());
+        } else {
+          const text = await statsRes.text();
+          console.error("Dashboard stats fetch returned non-JSON:", text.substring(0, 100));
+        }
+      } else {
+        console.error("Dashboard stats fetch failed:", statsRes.status, statsRes.statusText);
+      }
+
+      if (clustersRes.ok) {
+        const contentType = clustersRes.headers.get("content-type");
+        if (contentType && contentType.includes("application/json")) {
+          setClusters(await clustersRes.json());
+        } else {
+          const text = await clustersRes.text();
+          console.error("Dashboard clusters fetch returned non-JSON:", text.substring(0, 100));
+        }
+      } else {
+        console.error("Dashboard clusters fetch failed:", clustersRes.status, clustersRes.statusText);
+        setError(`Failed to fetch dashboard data: ${clustersRes.status} ${clustersRes.statusText}`);
+      }
+    } catch (e) {
+      console.error("Dashboard fetch error:", e);
+      setError("An unexpected error occurred while fetching dashboard data.");
+    }
+  }, []);
+
   useEffect(() => {
-    const fetchDashboard = async () => {
+    fetchDashboard();
+    const interval = setInterval(fetchDashboard, 30000); // Polling as backup
+
+    // WebSocket for real-time updates
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const ws = new WebSocket(`${protocol}//${window.location.host}`);
+
+    ws.onmessage = (event) => {
       try {
-        const headers = { 
-          "Authorization": `Bearer ${localStorage.getItem("token")}`
-        };
-        const [statsRes, clustersRes] = await Promise.all([
-          fetch("/api/admin/dashboard", { headers }),
-          fetch("/api/admin/clusters", { headers })
-        ]);
-        
-        if (statsRes.ok) setStats(await statsRes.json());
-        if (clustersRes.ok) setClusters(await clustersRes.json());
+        const data = JSON.parse(event.data);
+        if (data.type === 'NEW_CLAIM' || data.type === 'STATUS_UPDATE' || data.type === 'THRESHOLD_UPDATE') {
+          fetchDashboard();
+        }
       } catch (e) {
-        console.error("Dashboard fetch error:", e);
+        console.error("WebSocket message error:", e);
       }
     };
-    fetchDashboard();
-    const interval = setInterval(fetchDashboard, 5000);
-    return () => clearInterval(interval);
-  }, []);
+
+    return () => {
+      clearInterval(interval);
+      ws.close();
+    };
+  }, [fetchDashboard]);
+
+  if (error) return (
+    <div className="p-8 max-w-7xl mx-auto">
+      <div className="bg-red-50 border border-red-200 rounded-2xl p-6 text-red-700">
+        <div className="flex items-center gap-3 mb-2">
+          <AlertTriangle className="w-5 h-5" />
+          <h2 className="font-bold">Dashboard Error</h2>
+        </div>
+        <p className="text-sm">{error}</p>
+        <button 
+          onClick={() => window.location.reload()}
+          className="mt-4 px-4 py-2 bg-red-600 text-white rounded-lg text-sm font-medium hover:bg-red-700 transition-all"
+        >
+          Retry Connection
+        </button>
+      </div>
+    </div>
+  );
 
   if (!stats) return <div className="p-8 text-slate-500 font-medium">Loading metrics...</div>;
 
@@ -157,6 +258,50 @@ const AdminDashboard = ({ user }: { user: any }) => {
   }));
 
   const isViewer = user?.role === 'viewer';
+  const isAdmin = user?.role === 'admin';
+
+  const updateThreshold = async (val: number) => {
+    try {
+      const res = await fetch("/api/admin/liquidity/threshold", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${localStorage.getItem("token")}`
+        },
+        body: JSON.stringify({ threshold: val })
+      });
+      if (res.ok) {
+        fetchDashboard();
+      } else {
+        const data = await res.json();
+        alert(data.error || "Failed to update threshold");
+      }
+    } catch (e) {
+      console.error(e);
+      alert("Error updating threshold");
+    }
+  };
+
+  const handleSearch = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!searchQuery.trim()) {
+      setSearchResults(null);
+      return;
+    }
+    setIsSearching(true);
+    try {
+      const res = await fetch(`/api/admin/claims/search?q=${encodeURIComponent(searchQuery)}`, {
+        headers: { "Authorization": `Bearer ${localStorage.getItem("token")}` }
+      });
+      if (res.ok) {
+        setSearchResults(await res.json());
+      }
+    } catch (e) {
+      console.error("Search error:", e);
+    } finally {
+      setIsSearching(false);
+    }
+  };
 
   return (
     <div className="p-8 space-y-8 max-w-7xl mx-auto">
@@ -173,6 +318,23 @@ const AdminDashboard = ({ user }: { user: any }) => {
           <p className="text-slate-500 mt-1">Real-time fraud detection and liquidity monitoring</p>
         </div>
         <div className="flex gap-4">
+          {isAdmin && (
+            <div className="bg-white px-4 py-2 rounded-xl border border-slate-200 shadow-sm flex flex-col justify-center">
+              <p className="text-xs text-slate-400 uppercase font-bold tracking-wider mb-1">Payout Threshold</p>
+              <div className="flex items-center gap-3">
+                <input 
+                  type="range" 
+                  min="0" 
+                  max="1" 
+                  step="0.05" 
+                  value={stats.liquidity.payoutThreshold} 
+                  onChange={(e) => updateThreshold(parseFloat(e.target.value))}
+                  className="w-24 accent-indigo-600"
+                />
+                <span className="text-sm font-mono font-bold text-slate-700">{(stats.liquidity.payoutThreshold * 100).toFixed(0)}%</span>
+              </div>
+            </div>
+          )}
           <div className="bg-white px-4 py-2 rounded-xl border border-slate-200 shadow-sm flex items-center gap-4">
             <div>
               <p className="text-xs text-slate-400 uppercase font-bold tracking-wider">Liquidity Pool</p>
@@ -288,9 +450,36 @@ const AdminDashboard = ({ user }: { user: any }) => {
         </div>
 
         <div className="bg-white p-8 rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
-          <h3 className="text-lg font-bold text-slate-900 mb-6">Recent Activity</h3>
+          <div className="flex items-center justify-between mb-6">
+            <h3 className="text-lg font-bold text-slate-900">
+              {searchResults ? `Search Results (${searchResults.length})` : "Recent Activity"}
+            </h3>
+            <form onSubmit={handleSearch} className="relative">
+              <input 
+                type="text" 
+                placeholder="Search email or ID..." 
+                value={searchQuery}
+                onChange={(e) => {
+                  setSearchQuery(e.target.value);
+                  if (!e.target.value.trim()) setSearchResults(null);
+                }}
+                className="pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 outline-none transition-all w-64"
+              />
+              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+              {isSearching && (
+                <div className="absolute right-3 top-1/2 -translate-y-1/2">
+                  <div className="w-3 h-3 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin"></div>
+                </div>
+              )}
+            </form>
+          </div>
+          
           <div className="space-y-4">
-            {stats.recentClaims.map((claim: any, i: number) => (
+            {(searchResults || stats.recentClaims).length === 0 ? (
+              <div className="p-8 text-center text-slate-400 text-sm italic">
+                No claims found.
+              </div>
+            ) : (searchResults || stats.recentClaims).map((claim: any, i: number) => (
               <div key={i} className="flex items-center justify-between p-4 bg-slate-50 rounded-xl border border-slate-100 cursor-pointer hover:bg-slate-100 transition-colors" onClick={() => navigate(`/claims/${claim.id}`)}>
                 <div className="flex items-center gap-4">
                   <div className={`p-2 rounded-lg ${
@@ -329,7 +518,37 @@ const ClaimSubmission = () => {
   const [amount, setAmount] = useState(150);
   const [weather, setWeather] = useState("Heavy Rain");
 
+  useEffect(() => {
+    if (!result || !result.claimId) return;
+
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const ws = new WebSocket(`${protocol}//${window.location.host}`);
+
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.type === 'STATUS_UPDATE' && String(data.claimId) === String(result.claimId)) {
+          setResult((prev: any) => ({ ...prev, status: data.status }));
+        }
+      } catch (e) {
+        console.error("WebSocket message error:", e);
+      }
+    };
+
+    return () => ws.close();
+  }, [result]);
+
   const submitClaim = async (isSpoofed = false) => {
+    if (amount <= 0) {
+      alert("Please enter a valid claim amount greater than zero.");
+      return;
+    }
+
+    if (!weather) {
+      alert("Please select a weather condition.");
+      return;
+    }
+
     setLoading(true);
     setResult(null);
     
@@ -361,10 +580,19 @@ const ClaimSubmission = () => {
         },
         body: JSON.stringify({ amount, weather, gps, sensors, network })
       });
-      const data = await res.json();
-      setResult(data);
+      
+      const contentType = res.headers.get("content-type");
+      if (contentType && contentType.includes("application/json")) {
+        const data = await res.json();
+        setResult(data);
+      } else {
+        const text = await res.text();
+        console.error("Claim submission returned non-JSON:", text.substring(0, 100));
+        alert("Server error: Received invalid response format. Please try again later.");
+      }
     } catch (e) {
-      console.error(e);
+      console.error("Claim submission error:", e);
+      alert("An unexpected error occurred while submitting your claim.");
     } finally {
       setLoading(false);
     }
@@ -486,31 +714,61 @@ const TrajectoryPolyline = ({ path }: { path: google.maps.LatLngLiteral[] }) => 
   return null;
 };
 
-const ClaimDetails = () => {
+const ClaimDetails = ({ user }: { user: any }) => {
   const { id } = useParams();
   const [claim, setClaim] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
 
-  useEffect(() => {
-    const fetchClaim = async () => {
-      try {
-        const res = await fetch(`/api/claims/${id}`, {
-          headers: { 
-            "Authorization": `Bearer ${localStorage.getItem("token")}`
-          }
-        });
-        if (!res.ok) throw new Error("Failed to fetch claim");
+  const fetchClaim = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/claims/${id}`, {
+        headers: { 
+          "Authorization": `Bearer ${localStorage.getItem("token")}`
+        }
+      });
+      if (!res.ok) throw new Error(`Failed to fetch claim: ${res.status} ${res.statusText}`);
+      
+      const contentType = res.headers.get("content-type");
+      if (contentType && contentType.includes("application/json")) {
         const data = await res.json();
         setClaim(data);
+      } else {
+        const text = await res.text();
+        console.error("Claim details fetch returned non-JSON:", text.substring(0, 100));
+        throw new Error("Received invalid response format from server.");
+      }
+    } catch (e: any) {
+      console.error(e);
+      setClaim(null);
+    } finally {
+      setLoading(false);
+    }
+  }, [id]);
+
+  useEffect(() => {
+    fetchClaim();
+
+    // WebSocket for real-time status updates
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const ws = new WebSocket(`${protocol}//${window.location.host}`);
+
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.type === 'STATUS_UPDATE' && String(data.claimId) === String(id)) {
+          // Update local state if it's the current claim
+          setClaim((prev: any) => prev ? { ...prev, status: data.status } : null);
+          // Also refresh full data to be sure
+          fetchClaim();
+        }
       } catch (e) {
-        console.error(e);
-      } finally {
-        setLoading(false);
+        console.error("WebSocket message error:", e);
       }
     };
-    fetchClaim();
-  }, [id]);
+
+    return () => ws.close();
+  }, [fetchClaim, id]);
 
   if (loading) return <div className="p-8 text-slate-500 font-medium">Loading claim details...</div>;
   if (!claim) return <div className="p-8 text-red-500 font-medium">Claim not found</div>;
@@ -641,7 +899,7 @@ const ClaimDetails = () => {
             </div>
 
             {/* Admin Status Management */}
-            {localStorage.getItem("token") && JSON.parse(atob(localStorage.getItem("token")!.split(".")[1])).role !== 'worker' && (
+            {user && ['admin', 'analyst'].includes(user.role) && (
               <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm space-y-4">
                 <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest">Admin Actions</h3>
                 <div className="grid grid-cols-1 gap-2">
@@ -659,12 +917,19 @@ const ClaimDetails = () => {
                             },
                             body: JSON.stringify({ status: s })
                           });
-                          if (res.ok) {
+                          
+                          const contentType = res.headers.get("content-type");
+                          if (res.ok && contentType && contentType.includes("application/json")) {
                             const updated = await res.json();
                             setClaim({ ...claim, status: updated.status });
+                          } else {
+                            const text = await res.text();
+                            console.error("Status update returned error or non-JSON:", text.substring(0, 100));
+                            alert(`Failed to update status: ${res.status} ${res.statusText}`);
                           }
                         } catch (e) {
                           console.error(e);
+                          alert("An unexpected error occurred while updating status.");
                         }
                       }}
                       className={`w-full py-2 rounded-xl text-xs font-bold uppercase tracking-widest transition-all ${
@@ -781,10 +1046,17 @@ const ClaimsHistory = () => {
             "Authorization": `Bearer ${localStorage.getItem("token")}`
           }
         });
-        const data = await res.json();
-        setClaims(data);
+        
+        const contentType = res.headers.get("content-type");
+        if (res.ok && contentType && contentType.includes("application/json")) {
+          const data = await res.json();
+          setClaims(data);
+        } else {
+          const text = await res.text();
+          console.error("Claims history fetch returned non-JSON:", text.substring(0, 100));
+        }
       } catch (e) {
-        console.error(e);
+        console.error("Claims history fetch error:", e);
       } finally {
         setLoading(false);
       }
@@ -896,10 +1168,17 @@ const UserProfile = () => {
             "Authorization": `Bearer ${localStorage.getItem("token")}`
           }
         });
-        const data = await res.json();
-        setProfile(data);
+        
+        const contentType = res.headers.get("content-type");
+        if (res.ok && contentType && contentType.includes("application/json")) {
+          const data = await res.json();
+          setProfile(data);
+        } else {
+          const text = await res.text();
+          console.error("User profile fetch returned non-JSON:", text.substring(0, 100));
+        }
       } catch (e) {
-        console.error(e);
+        console.error("User profile fetch error:", e);
       } finally {
         setLoading(false);
       }
@@ -912,123 +1191,109 @@ const UserProfile = () => {
 
   const trustScore = profile.trust_score * 100;
 
+  const breakdownData = [
+    { subject: 'Tenure', A: profile.breakdown.tenure * 100, fullMark: 100 },
+    { subject: 'Claim History', A: profile.breakdown.claimHistory * 100, fullMark: 100 },
+    { subject: 'Sensor Reliability', A: profile.breakdown.sensorReliability * 100, fullMark: 100 },
+    { subject: 'Network Reputation', A: profile.breakdown.networkReputation * 100, fullMark: 100 },
+  ];
+
   return (
-    <div className="p-8 max-w-4xl mx-auto space-y-8">
+    <div className="p-8 max-w-5xl mx-auto space-y-8">
       <div className="bg-white p-8 rounded-2xl border border-slate-100 shadow-xl">
-        <div className="flex flex-col md:flex-row gap-12 items-center">
-          <div className="relative w-48 h-48">
-            <svg className="w-full h-full transform -rotate-90">
-              <circle
-                cx="96"
-                cy="96"
-                r="88"
-                stroke="currentColor"
-                strokeWidth="12"
-                fill="transparent"
-                className="text-slate-100"
-              />
-              <circle
-                cx="96"
-                cy="96"
-                r="88"
-                stroke="currentColor"
-                strokeWidth="12"
-                fill="transparent"
-                strokeDasharray={552.92}
-                strokeDashoffset={552.92 - (552.92 * trustScore) / 100}
-                className={`${
-                  trustScore > 70 ? 'text-emerald-500' : 
-                  trustScore > 40 ? 'text-amber-500' : 'text-red-500'
-                } transition-all duration-1000 ease-out`}
-                strokeLinecap="round"
-              />
-            </svg>
-            <div className="absolute inset-0 flex flex-col items-center justify-center">
-              <span className="text-4xl font-bold text-slate-900">{trustScore.toFixed(0)}</span>
-              <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">Trust Score</span>
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-12 items-center">
+          <div className="flex flex-col items-center gap-6">
+            <div className="relative w-48 h-48">
+              <svg className="w-full h-full transform -rotate-90">
+                <circle
+                  cx="96"
+                  cy="96"
+                  r="88"
+                  stroke="currentColor"
+                  strokeWidth="12"
+                  fill="transparent"
+                  className="text-slate-100"
+                />
+                <circle
+                  cx="96"
+                  cy="96"
+                  r="88"
+                  stroke="currentColor"
+                  strokeWidth="12"
+                  fill="transparent"
+                  strokeDasharray={552.92}
+                  strokeDashoffset={552.92 - (552.92 * trustScore) / 100}
+                  className={`${
+                    trustScore > 70 ? 'text-emerald-500' : 
+                    trustScore > 40 ? 'text-amber-500' : 'text-red-500'
+                  } transition-all duration-1000 ease-out`}
+                  strokeLinecap="round"
+                />
+              </svg>
+              <div className="absolute inset-0 flex flex-col items-center justify-center">
+                <span className="text-4xl font-bold text-slate-900">{trustScore.toFixed(0)}</span>
+                <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">Trust Score</span>
+              </div>
+            </div>
+            <div className="text-center">
+              <h2 className="text-3xl font-bold text-slate-900">{profile.email}</h2>
+              <p className="text-slate-500 uppercase text-xs font-bold tracking-widest mt-1">{profile.role} • {profile.tenure_days} Days Active</p>
             </div>
           </div>
 
-          <div className="flex-1 space-y-6">
-            <div>
-              <h2 className="text-3xl font-bold text-slate-900">{profile.email}</h2>
-              <p className="text-slate-500 mt-1 uppercase text-xs font-bold tracking-widest">{profile.role} • {profile.tenure_days} Days Active</p>
-            </div>
+          <div className="h-[300px] w-full">
+            <h3 className="text-sm font-bold text-slate-400 uppercase tracking-widest mb-4 text-center">Score Breakdown</h3>
+            <ResponsiveContainer width="100%" height="100%">
+              <RadarChart cx="50%" cy="50%" outerRadius="80%" data={breakdownData}>
+                <PolarGrid stroke="#e2e8f0" />
+                <PolarAngleAxis dataKey="subject" tick={{ fill: '#64748b', fontSize: 10 }} />
+                <PolarRadiusAxis angle={30} domain={[0, 100]} tick={false} axisLine={false} />
+                <Radar
+                  name="Trust Components"
+                  dataKey="A"
+                  stroke="#4f46e5"
+                  fill="#4f46e5"
+                  fillOpacity={0.6}
+                />
+              </RadarChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      </div>
 
-            <div className="space-y-4">
-              <h3 className="text-sm font-bold text-slate-900 uppercase tracking-widest">Score Contribution</h3>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                {[
-                  { 
-                    label: "Tenure & Loyalty", 
-                    value: profile.breakdown.tenure * 100, 
-                    icon: TrendingUp, 
-                    color: "text-blue-600", 
-                    bg: "bg-blue-50",
-                    desc: "Rewards long-term platform commitment."
-                  },
-                  { 
-                    label: "Claim History", 
-                    value: profile.breakdown.claimHistory * 100, 
-                    icon: FileText, 
-                    color: "text-indigo-600", 
-                    bg: "bg-indigo-50",
-                    desc: "Accuracy of previous parametric submissions."
-                  },
-                  { 
-                    label: "Sensor Reliability", 
-                    value: profile.breakdown.sensorConsistency * 100, 
-                    icon: Activity, 
-                    color: "text-emerald-600", 
-                    bg: "bg-emerald-50",
-                    desc: "Consistency of GPS and motion data streams."
-                  },
-                  { 
-                    label: "Network Reputation", 
-                    value: 10, 
-                    icon: Shield, 
-                    color: "text-purple-600", 
-                    bg: "bg-purple-50",
-                    desc: "Security profile of your connection endpoints."
-                  },
-                ].map((item, i) => (
-                  <div key={i} className="p-4 bg-slate-50 rounded-xl border border-slate-100 flex flex-col justify-between">
-                    <div>
-                      <div className="flex items-center gap-3 mb-2">
-                        <div className={`p-2 ${item.bg} rounded-lg`}>
-                          <item.icon className={`w-4 h-4 ${item.color}`} />
-                        </div>
-                        <span className="text-sm font-bold text-slate-700">{item.label}</span>
-                      </div>
-                      <p className="text-[10px] text-slate-500 mb-3 leading-tight">{item.desc}</p>
-                    </div>
-                    <div className="space-y-1.5">
-                      <div className="flex justify-between text-[10px] font-bold text-slate-400">
-                        <span>STRENGTH</span>
-                        <span>{item.value.toFixed(0)}%</span>
-                      </div>
-                      <div className="w-full h-1.5 bg-slate-200 rounded-full overflow-hidden">
-                        <div 
-                          className={`h-full ${item.color.replace('text', 'bg')} rounded-full`}
-                          style={{ width: `${item.value}%` }}
-                        />
-                      </div>
-                    </div>
-                  </div>
-                ))}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+        {[
+          { label: 'Tenure Impact', value: profile.breakdown.tenure, icon: Clock, color: 'text-blue-600', bg: 'bg-blue-50', desc: "Rewards long-term platform commitment." },
+          { label: 'Claim History', value: profile.breakdown.claimHistory, icon: FileText, color: 'text-indigo-600', bg: 'bg-indigo-50', desc: "Accuracy of previous parametric submissions." },
+          { label: 'Sensor Reliability', value: profile.breakdown.sensorReliability, icon: Activity, color: 'text-emerald-600', bg: 'bg-emerald-50', desc: "Consistency of GPS and motion data streams." },
+          { label: 'Network Reputation', value: profile.breakdown.networkReputation, icon: Wifi, color: 'text-purple-600', bg: 'bg-purple-50', desc: "Security profile of your connection endpoints." },
+        ].map((item, idx) => (
+          <div key={idx} className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm flex flex-col justify-between">
+            <div>
+              <div className="flex items-center gap-3 mb-2">
+                <div className={`p-2 rounded-lg ${item.bg}`}>
+                  <item.icon className={`w-5 h-5 ${item.color}`} />
+                </div>
+                <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">{item.label}</span>
+              </div>
+              <p className="text-[10px] text-slate-500 mb-4 leading-tight">{item.desc}</p>
+            </div>
+            <div className="space-y-2">
+              <div className="flex justify-between items-end">
+                <span className="text-2xl font-bold text-slate-900">{(item.value * 100).toFixed(0)}%</span>
+              </div>
+              <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                <div 
+                  className={`h-full rounded-full transition-all duration-1000 ${
+                    item.value > 0.7 ? 'bg-emerald-500' : 
+                    item.value > 0.4 ? 'bg-amber-500' : 'bg-red-500'
+                  }`}
+                  style={{ width: `${item.value * 100}%` }}
+                />
               </div>
             </div>
           </div>
-        </div>
-
-        <div className="mt-12 p-6 bg-indigo-50 rounded-2xl border border-indigo-100">
-          <h3 className="text-lg font-bold text-indigo-900 mb-2">What influences your score?</h3>
-          <p className="text-indigo-800 text-sm leading-relaxed">
-            Your trust score is a real-time metric that determines how quickly your claims are processed. 
-            It is built on <strong>tenure</strong> (how long you've been with us), <strong>claim consistency</strong> (submitting valid data), 
-            and <strong>sensor fusion reliability</strong> (accurate GPS and motion data). High scores unlock instant payouts and lower verification thresholds.
-          </p>
-        </div>
+        ))}
       </div>
     </div>
   );
@@ -1052,9 +1317,16 @@ const ClusterDetails = ({ user }: { user: any }) => {
           navigate("/admin");
           return;
         }
-        setData(await res.json());
+        
+        const contentType = res.headers.get("content-type");
+        if (res.ok && contentType && contentType.includes("application/json")) {
+          setData(await res.json());
+        } else {
+          const text = await res.text();
+          console.error("Cluster details fetch returned non-JSON:", text.substring(0, 100));
+        }
       } catch (e) {
-        console.error(e);
+        console.error("Cluster details fetch error:", e);
       } finally {
         setLoading(false);
       }
@@ -1153,8 +1425,8 @@ const SimulationPage = ({ user }: { user: any }) => {
   const navigate = useNavigate();
 
   useEffect(() => {
-    if (user?.role === 'viewer') {
-      navigate("/admin");
+    if (['viewer', 'worker'].includes(user?.role)) {
+      navigate(user?.role === 'viewer' ? "/admin" : "/claim");
     }
   }, [user, navigate]);
 
@@ -1222,12 +1494,18 @@ function NotificationBell() {
           headers: { "Authorization": `Bearer ${token}` }
         });
         if (res.ok) {
-          const data = await res.json();
-          setNotifications(data);
-          setUnreadCount(data.filter((n: any) => !n.is_read).length);
+          const contentType = res.headers.get("content-type");
+          if (contentType && contentType.includes("application/json")) {
+            const data = await res.json();
+            setNotifications(data);
+            setUnreadCount(data.filter((n: any) => !n.is_read).length);
+          } else {
+            const text = await res.text();
+            console.error("Notifications fetch returned non-JSON:", text.substring(0, 100));
+          }
         }
       } catch (e) {
-        console.error(e);
+        console.error("Notifications fetch error:", e);
       }
     };
 
@@ -1235,6 +1513,23 @@ function NotificationBell() {
     const interval = setInterval(fetchNotifications, 30000); // Poll every 30s
     return () => clearInterval(interval);
   }, []);
+
+  const handleMarkAllRead = async () => {
+    const token = localStorage.getItem("token");
+    if (!token) return;
+    try {
+      const res = await fetch("/api/notifications/read-all", {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${token}` }
+      });
+      if (res.ok) {
+        setNotifications(notifications.map(n => ({ ...n, is_read: 1 })));
+        setUnreadCount(0);
+      }
+    } catch (e) {
+      console.error("Mark all read error:", e);
+    }
+  };
 
   return (
     <div className="relative">
@@ -1254,7 +1549,12 @@ function NotificationBell() {
         <div className="absolute right-0 mt-2 w-80 bg-white rounded-2xl shadow-xl border border-slate-100 z-50 overflow-hidden">
           <div className="p-4 border-bottom border-slate-50 bg-slate-50/50 flex justify-between items-center">
             <h4 className="text-xs font-bold text-slate-900 uppercase tracking-widest">Notifications</h4>
-            <button className="text-[10px] text-slate-400 hover:text-slate-600 uppercase font-bold">Clear All</button>
+            <button 
+              onClick={handleMarkAllRead}
+              className="text-[10px] text-slate-400 hover:text-indigo-600 uppercase font-bold transition-colors"
+            >
+              Mark All Read
+            </button>
           </div>
           <div className="max-h-96 overflow-y-auto">
             {notifications.length === 0 ? (
@@ -1299,11 +1599,50 @@ export default function App() {
     }
   }, []);
 
-  const handleLogout = () => {
+  const handleLogout = useCallback(() => {
     localStorage.removeItem("token");
     setUser(null);
-    window.location.href = "/";
-  };
+  }, []);
+
+  useEffect(() => {
+    if (!user) return;
+
+    const checkToken = async () => {
+      const token = localStorage.getItem("token");
+      if (!token) return;
+
+      try {
+        const payload = JSON.parse(atob(token.split(".")[1]));
+        if (!payload.exp) return;
+
+        const exp = payload.exp * 1000;
+        const now = Date.now();
+        const timeLeft = exp - now;
+
+        // Refresh if less than 15 minutes left
+        if (timeLeft < 15 * 60 * 1000 && timeLeft > 0) {
+          const res = await fetch("/api/auth/refresh", {
+            method: "POST",
+            headers: { "Authorization": `Bearer ${token}` }
+          });
+          if (res.ok) {
+            const data = await res.json();
+            localStorage.setItem("token", data.token);
+            const newPayload = JSON.parse(atob(data.token.split(".")[1]));
+            setUser(newPayload);
+          }
+        } else if (timeLeft <= 0) {
+          handleLogout();
+        }
+      } catch (e) {
+        console.error("Token refresh error:", e);
+      }
+    };
+
+    const interval = setInterval(checkToken, 5 * 60 * 1000); // Check every 5 minutes
+    checkToken();
+    return () => clearInterval(interval);
+  }, [user, handleLogout]);
 
   return (
     <Router>
@@ -1322,16 +1661,18 @@ export default function App() {
                       <LayoutDashboard className="w-4 h-4" /> Dashboard
                     </Link>
                   )}
-                  <Link to="/claim" className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-50 hover:text-indigo-600 transition-all flex items-center gap-2">
-                    <FileText className="w-4 h-4" /> New Claim
-                  </Link>
+                  {['worker', 'admin', 'analyst'].includes(user.role) && (
+                    <Link to="/claim" className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-50 hover:text-indigo-600 transition-all flex items-center gap-2">
+                      <FileText className="w-4 h-4" /> New Claim
+                    </Link>
+                  )}
                   <Link to="/history" className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-50 hover:text-indigo-600 transition-all flex items-center gap-2">
                     <Clock className="w-4 h-4" /> History
                   </Link>
                   <Link to="/profile" className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-50 hover:text-indigo-600 transition-all flex items-center gap-2">
                     <User className="w-4 h-4" /> Profile
                   </Link>
-                  {user.role !== 'viewer' && (
+                  {['admin', 'analyst'].includes(user.role) && (
                     <Link to="/simulate" className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-50 hover:text-indigo-600 transition-all flex items-center gap-2">
                       <Play className="w-4 h-4" /> Simulator
                     </Link>
@@ -1357,10 +1698,16 @@ export default function App() {
         )}
 
         <Routes>
-          <Route path="/" element={user ? <AdminDashboard user={user} /> : <LoginPage onLogin={setUser} />} />
-          <Route path="/admin" element={<AdminDashboard user={user} />} />
+          <Route path="/" element={
+            !user ? <LoginPage onLogin={setUser} /> :
+            ['admin', 'analyst', 'viewer'].includes(user.role) ? <AdminDashboard user={user} /> :
+            <Navigate to="/claim" replace />
+          } />
+          <Route path="/admin" element={
+            ['admin', 'analyst', 'viewer'].includes(user?.role) ? <AdminDashboard user={user} /> : <Navigate to="/" replace />
+          } />
           <Route path="/admin/clusters/:id" element={<ClusterDetails user={user} />} />
-          <Route path="/claims/:id" element={<ClaimDetails />} />
+          <Route path="/claims/:id" element={<ClaimDetails user={user} />} />
           <Route path="/claim" element={<ClaimSubmission />} />
           <Route path="/history" element={<ClaimsHistory />} />
           <Route path="/profile" element={<UserProfile />} />
