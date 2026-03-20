@@ -1,12 +1,12 @@
-#🛡️ Our Solution: Multi-Layer Adversarial Defense System
+**🛡️ Our Solution: Multi-Layer Adversarial Defense System**
 
-#We introduce a 4-layer intelligent defense architecture combining sensor fusion, behavioral intelligence, graph analysis, and dynamic risk control.
+We introduce a 4-layer intelligent defense architecture combining sensor fusion, behavioral intelligence, graph analysis, and dynamic risk control.
 
 ---
 
-###⚙️ 1. Multi-Layer Fraud Detection Engine
+⚙️ 1. Multi-Layer Fraud Detection Engine
 
-###🔹 A. Sensor Fusion Validation (Reality Check Layer)
+🔹 A. Sensor Fusion Validation (Reality Check Layer)
 
 We do not trust GPS alone.
 
