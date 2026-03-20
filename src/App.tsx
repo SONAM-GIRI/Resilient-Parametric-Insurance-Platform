@@ -23,7 +23,8 @@ import {
   ChevronLeft,
   Bell,
   Search,
-  Settings
+  Settings,
+  Info
 } from "lucide-react";
 import { 
   LineChart, 
@@ -1182,6 +1183,84 @@ const ClaimDetails = ({ user }: { user: any }) => {
                   }`}
                   style={{ width: `${claim.risk_score * 100}%` }}
                 />
+              </div>
+
+              {/* Risk Breakdown */}
+              <div className="pt-4 border-t border-slate-100 space-y-3">
+                <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Risk Breakdown</h4>
+                <div className="grid grid-cols-2 gap-3">
+                  {/* Sensor Score */}
+                  <div className="group relative">
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-[10px] text-slate-500 flex items-center gap-1">
+                        Sensor <Info className="w-2.5 h-2.5 cursor-help" />
+                      </span>
+                      <span className="text-[10px] font-bold text-slate-700">
+                        {claim.sensor_score !== null ? `${(claim.sensor_score * 100).toFixed(0)}%` : 'N/A'}
+                      </span>
+                    </div>
+                    <div className="w-full h-1 bg-slate-100 rounded-full overflow-hidden">
+                      <div className="h-full bg-indigo-400" style={{ width: `${(claim.sensor_score || 0) * 100}%` }} />
+                    </div>
+                    <div className="absolute bottom-full left-0 mb-2 w-48 p-2 bg-slate-900 text-[10px] text-white rounded-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10 shadow-xl">
+                      Variance between GPS trajectory and accelerometer/gyroscope data. High variance suggests simulated movement.
+                    </div>
+                  </div>
+
+                  {/* Behavioral Score */}
+                  <div className="group relative">
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-[10px] text-slate-500 flex items-center gap-1">
+                        Behavior <Info className="w-2.5 h-2.5 cursor-help" />
+                      </span>
+                      <span className="text-[10px] font-bold text-slate-700">
+                        {claim.behavioral_score !== null ? `${(claim.behavioral_score * 100).toFixed(0)}%` : 'N/A'}
+                      </span>
+                    </div>
+                    <div className="w-full h-1 bg-slate-100 rounded-full overflow-hidden">
+                      <div className="h-full bg-indigo-400" style={{ width: `${(claim.behavioral_score || 0) * 100}%` }} />
+                    </div>
+                    <div className="absolute bottom-full left-0 mb-2 w-48 p-2 bg-slate-900 text-[10px] text-white rounded-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10 shadow-xl">
+                      Analysis of submission timing, frequency, and historical trust patterns for this user.
+                    </div>
+                  </div>
+
+                  {/* Network Risk */}
+                  <div className="group relative">
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-[10px] text-slate-500 flex items-center gap-1">
+                        Network <Info className="w-2.5 h-2.5 cursor-help" />
+                      </span>
+                      <span className="text-[10px] font-bold text-slate-700">
+                        {claim.network_risk !== null ? `${(claim.network_risk * 100).toFixed(0)}%` : 'N/A'}
+                      </span>
+                    </div>
+                    <div className="w-full h-1 bg-slate-100 rounded-full overflow-hidden">
+                      <div className="h-full bg-indigo-400" style={{ width: `${(claim.network_risk || 0) * 100}%` }} />
+                    </div>
+                    <div className="absolute bottom-full left-0 mb-2 w-48 p-2 bg-slate-900 text-[10px] text-white rounded-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10 shadow-xl">
+                      Reputation of the IP address and Device ID. Checks against known fraud blacklists and VPN/proxy usage.
+                    </div>
+                  </div>
+
+                  {/* Graph Risk */}
+                  <div className="group relative">
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-[10px] text-slate-500 flex items-center gap-1">
+                        Graph <Info className="w-2.5 h-2.5 cursor-help" />
+                      </span>
+                      <span className="text-[10px] font-bold text-slate-700">
+                        {claim.graph_risk !== null ? `${(claim.graph_risk * 100).toFixed(0)}%` : 'N/A'}
+                      </span>
+                    </div>
+                    <div className="w-full h-1 bg-slate-100 rounded-full overflow-hidden">
+                      <div className="h-full bg-indigo-400" style={{ width: `${(claim.graph_risk || 0) * 100}%` }} />
+                    </div>
+                    <div className="absolute bottom-full left-0 mb-2 w-48 p-2 bg-slate-900 text-[10px] text-white rounded-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10 shadow-xl">
+                      Community detection analysis. Flags connections to clusters of previously rejected or fraudulent accounts.
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
 

@@ -44,6 +44,10 @@ db.exec(`
     sensor_data TEXT, -- JSON string
     network_info TEXT, -- JSON string
     risk_score REAL,
+    sensor_score REAL,
+    behavioral_score REAL,
+    network_risk REAL,
+    graph_risk REAL,
     status TEXT DEFAULT 'pending',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY(user_id) REFERENCES users(id)
@@ -603,9 +607,9 @@ async function startServer() {
 
       // 5. Save Claim to DB
       const info = db.prepare(`
-        INSERT INTO claims (user_id, amount, weather_condition, gps_data, sensor_data, network_info, risk_score, status)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(userId, amount, weather, JSON.stringify(gps), JSON.stringify(sensors), JSON.stringify(network), frs, status);
+        INSERT INTO claims (user_id, amount, weather_condition, gps_data, sensor_data, network_info, risk_score, sensor_score, behavioral_score, network_risk, graph_risk, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(userId, amount, weather, JSON.stringify(gps), JSON.stringify(sensors), JSON.stringify(network), frs, sensorScore, behavioralScore, networkRisk, graphRisk, status);
 
       const claimId = info.lastInsertRowid;
 
