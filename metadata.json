@@ -1,0 +1,7 @@
+{
+  "name": "Resilient Parametric Insurance Platform",
+  "description": "A parametric insurance system for delivery workers with advanced anti-GPS spoofing and fraud ring detection.",
+  "requestFramePermissions": [
+    "geolocation"
+  ]
+}
