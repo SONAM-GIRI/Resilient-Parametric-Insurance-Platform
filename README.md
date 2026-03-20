@@ -1,12 +1,12 @@
-__🛡️ Our Solution: Multi-Layer Adversarial Defense System__
+# 🛡️ Our Solution: Multi-Layer Adversarial Defense System
 
 We introduce a 4-layer intelligent defense architecture combining sensor fusion, behavioral intelligence, graph analysis, and dynamic risk control.
 
 ---
 
-⚙️ 1. Multi-Layer Fraud Detection Engine
+## ⚙️ 1. Multi-Layer Fraud Detection Engine
 
-🔹 A. Sensor Fusion Validation (Reality Check Layer)
+**🔹 A. Sensor Fusion Validation (Reality Check Layer)**
 
 We do not trust GPS alone.
 
@@ -25,7 +25,7 @@ We cross-verify:
 
 ---
 
-🔹 B. Behavioral Anomaly Detection (User Intelligence Layer)
+**🔹 B. Behavioral Anomaly Detection (User Intelligence Layer)**
 
 Each user has a behavioral fingerprint.
 
@@ -45,7 +45,7 @@ We analyze:
 
 ---
 
-🔹 C. Graph-Based Fraud Ring Detection (Network Intelligence Layer)
+**🔹 C. Graph-Based Fraud Ring Detection (Network Intelligence Layer)**
 
 Fraud is rarely individual — it’s coordinated.
 
@@ -72,7 +72,7 @@ Using:
 
 ---
 
-🧮 2. Fraud Risk Scoring Engine (FRS)
+## 🧮 2. Fraud Risk Scoring Engine (FRS)
 
 We combine all signals into a single interpretable score (0–1):
 
@@ -93,11 +93,11 @@ FRS Score| Action
 
 ---
 
-⚖️ 3. Fair UX for Honest Users
+## ⚖️ 3. Fair UX for Honest Users
 
 We ensure zero friction for genuine workers:
 
-🔹 Smart Handling:
+**🔹 Smart Handling:**
 
 - No immediate rejection
 - Introduce progressive verification:
@@ -109,7 +109,7 @@ We ensure zero friction for genuine workers:
 
 ---
 
-💰 4. Liquidity Pool Protection System
+## 💰 4. Liquidity Pool Protection System
 
 To prevent system-wide collapse, we introduce:
 
@@ -128,7 +128,7 @@ To prevent system-wide collapse, we introduce:
 
 ---
 
-🔐 5. Anti-Spoofing Enhancements
+## 🔐 5. Anti-Spoofing Enhancements
 
 We go beyond traditional detection:
 
@@ -140,7 +140,7 @@ We go beyond traditional detection:
 
 ---
 
-🏗️ System Architecture
+## 🏗️ System Architecture
 
 User Device
    ↓
@@ -162,7 +162,7 @@ Payout System
 
 ---
 
-🧪 Simulation & Testing
+## 🧪 Simulation & Testing
 
 🔐 Admin Access:
 
@@ -183,18 +183,18 @@ Password: password
 
 ---
 
-🚀 Tech Stack
+## 🚀 Tech Stack
 
-Layer| Technology
+**Layer| Technology
 Frontend| React, Tailwind, Framer Motion
 Backend| Node.js, Express, TypeScript
 Database| SQLite (better-sqlite3)
 Graph Analysis| graphology, louvain
-Visualization| Recharts
+Visualization| Recharts**
 
 ---
 
-🏆 Key Innovations
+## 🏆 Key Innovations
 
 ✔ Multi-signal validation (not GPS-dependent)
 ✔ Real-time fraud ring detection
@@ -204,7 +204,7 @@ Visualization| Recharts
 
 ---
 
-🎯 Final Outcome
+## 🎯 Final Outcome
 
 Our system is not just fraud-resistant — it is fraud-adaptive.
 
